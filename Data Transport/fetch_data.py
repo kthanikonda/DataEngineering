@@ -1,7 +1,7 @@
 import urllib.request
 import json
 
-vehicle_ids = [3212, 2904] 
+vehicle_ids = [3212, 2904]
 
 base_url = "https://busdata.cs.pdx.edu/api/getBreadCrumbs"
 
