@@ -17,10 +17,10 @@ logging.basicConfig(filename=log_file, level=logging.INFO,
 
 
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/home/kthaniko/pub_sub_key.json"
+
 project_id = "parabolic-grid-456118-u8"
-subscription_id = ""
-subscriber = pubsub_v1.SubscriberClient()
-subscription_path = subscriber.subscription_path(project_id, subscription_id)
+subscription_id = "datatransporttopic-sub"
+subscription_path = pubsub_v1.SubscriberClient().subscription_path(project_id, subscription_id)
 
 DB_CONFIG = {
     "host": "localhost",
