@@ -17,17 +17,17 @@ logging.basicConfig(filename=log_file, level=logging.INFO,
 
 
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/home/kthaniko/pub_sub_key.json"
-
 project_id = "parabolic-grid-456118-u8"
-subscription_id = "datatransporttopic-sub"
-subscription_path = pubsub_v1.SubscriberClient().subscription_path(project_id, subscription_id)
+subscription_id = "my-sub"
+subscriber = pubsub_v1.SubscriberClient()
+subscription_path = subscriber.subscription_path(project_id, subscription_id)
 
 DB_CONFIG = {
     "host": "localhost",
     "port": 5432,
     "database": "postgres",
     "user": "postgres",
-    "password": "DataEngineering"
+    "password": "Lab"
 }
 
 
@@ -39,7 +39,6 @@ total_received = 0
 total_loaded = 0
 last_message_time = datetime.now()
 
-timeout = 1000.0
 # Stop after 60 seconds of no message
 idle_timeout = 60  
 
@@ -264,9 +263,6 @@ handler = DataHandler()
 if __name__ == "__main__":
     try:
         while True:
-            if time.time() - start_time > timeout:
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] Timeout reached. Exiting...")
-                break
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Subscribing to {subscription_path}...")
             streaming_pull_future = subscriber.subscribe(subscription_path, callback=callback)
 
@@ -278,7 +274,7 @@ if __name__ == "__main__":
                             streaming_pull_future.cancel()
                             break
                         time.sleep(5)
-                    break  
+                    break  # Exit outer while-loop
                 except Exception as e:
                     logging.error(f"Subscriber crashed: {e}. Restarting loop...")
                     streaming_pull_future.cancel()
