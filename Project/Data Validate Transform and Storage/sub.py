@@ -1,7 +1,3 @@
-# TriMet GPS Data Pipeline
-# Description: This script ingests GPS data from Google Pub/Sub, validates and transforms it,
-# and loads the clean data into a PostgreSQL database.
-
 import os
 import json
 import logging
@@ -14,19 +10,19 @@ import pandas as pd
 from io import StringIO
 from threading import Lock
 
-# Logging setup for debugging and operational monitoring
+# Set up a log file to record events and errors during pipeline execution
 log_file = "batched_pipeline.log"
 logging.basicConfig(filename=log_file, level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(message)s")
 
-# GCP configuration for Pub/Sub subscription
+# Set up GCP credentials and define the Pub/Sub subscription path
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/home/kthaniko/pub_sub_key.json"
 project_id = "parabolic-grid-456118-u8"
 subscription_id = "my-sub"
 subscriber = pubsub_v1.SubscriberClient()
 subscription_path = subscriber.subscription_path(project_id, subscription_id)
 
-# PostgreSQL database connection parameters
+# PostgreSQL database connection settings
 DB_CONFIG = {
     "host": "localhost",
     "port": 5432,
@@ -35,18 +31,18 @@ DB_CONFIG = {
     "password": "Lab"
 }
 
-# Global variables for batching and processing state
+# Global variables to help with batching, timing, and tracking stats
 first_operation_date = None
 buffer_lock = Lock()
 message_buffer = []
 BATCH_SIZE = 1000
-idle_timeout = 60  # in seconds
+idle_timeout = 60  # seconds to wait with no new messages before exiting
 start_time = time.time()
 total_received = 0
 total_loaded = 0
 last_message_time = datetime.now()
 
-# Class to validate and transform GPS records
+# Class to validate each incoming GPS record and compute speed
 class TriMetRecordCleaner:
     def __init__(self):
         self.processed_combinations = set()
@@ -58,7 +54,7 @@ class TriMetRecordCleaner:
         for record in records:
             record_key = (record.get("EVENT_NO_TRIP"), record.get("ACT_TIME"))
             if record_key in unique_entries:
-                continue
+                continue  # Skip duplicates
             unique_entries.add(record_key)
 
             try:
@@ -68,7 +64,7 @@ class TriMetRecordCleaner:
                 logging.warning(f"Validation failed for record: {record.get('EVENT_NO_TRIP')}, Reason: {e}")
                 continue
 
-            # Construct timestamp
+            # Create a combined timestamp from OPD_DATE and ACT_TIME
             trip_id = record["EVENT_NO_TRIP"]
             timestamp = datetime.strptime(record["OPD_DATE"].split(":")[0], "%d%b%Y") + timedelta(seconds=record["ACT_TIME"])
 
@@ -84,14 +80,14 @@ class TriMetRecordCleaner:
         if df.empty:
             return df
 
-        # Calculate speed
+        # Sort and compute speed using METERS and time difference
         df.sort_values(by=["trip_id", "timestamp"], inplace=True)
         df['dMETERS'] = df.groupby('trip_id')['METERS'].diff()
         df['dTIMESTAMP'] = df.groupby('trip_id')['timestamp'].diff()
         df['SPEED'] = df.apply(
             lambda r: r['dMETERS'] / r['dTIMESTAMP'].total_seconds()
             if pd.notnull(r['dTIMESTAMP']) and r['dTIMESTAMP'].total_seconds() > 0 else None, axis=1)
-        df['SPEED'] = df['SPEED'].bfill()
+        df['SPEED'] = df['SPEED'].bfill()  # Fill missing speed values
 
         return df[['timestamp', 'latitude', 'longitude', 'SPEED', 'trip_id']]
 
@@ -142,7 +138,7 @@ class TriMetRecordCleaner:
 
         return True
 
-# Class to extract and construct trip metadata
+# Class to extract trip-level metadata like service type, route and direction
 class TripDetails:
     def __init__(self):
         self.trip_details = {}
@@ -170,7 +166,7 @@ class TripDetails:
 
         return pd.DataFrame(self.trip_details.values())
 
-# Main pipeline handler to validate, transform, and save
+# Class that coordinates data processing and loading to DB
 class TriMetPipelineHandler:
     def __init__(self):
         self.cleaner = TriMetRecordCleaner()
@@ -191,6 +187,7 @@ class TriMetPipelineHandler:
             validated_df.drop(columns=["timestamp"], inplace=True)
             validated_df = validated_df[["tstamp", "latitude", "longitude", "SPEED", "trip_id"]]
 
+            # Insert trip metadata, avoiding duplicates
             for _, row in trip_metadata_df.iterrows():
                 cursor.execute(
                     "INSERT INTO trip (trip_id, route_id, vehicle_id, service_key, direction) "
@@ -198,6 +195,7 @@ class TriMetPipelineHandler:
                     (row['trip_id'], row['route_id'], row['vehicle_id'], row['service_key'], row['direction'])
                 )
 
+            # Bulk insert the GPS records
             if not validated_df.empty:
                 for i in range(0, len(validated_df), 10000):
                     batch = validated_df.iloc[i:i + 10000]
@@ -217,7 +215,9 @@ class TriMetPipelineHandler:
                 cursor.close()
                 connection.close()
 
-# Callback to handle each message from Pub/Sub
+# Callback for each Pub/Sub message
+# Parses, batches, validates, and loads into DB
+
 def callback(message: pubsub_v1.subscriber.message.Message):
     global message_buffer, total_received, last_message_time
     try:
@@ -240,10 +240,10 @@ def callback(message: pubsub_v1.subscriber.message.Message):
     except Exception as e:
         logging.error(f"Callback error: {e}")
 
-# Instantiate handler
+# Create the main pipeline handler
 handler = TriMetPipelineHandler()
 
-# Main loop to maintain subscription until idle
+# Keep receiving messages until idle timeout is reached
 if __name__ == "__main__":
     try:
         while True:
