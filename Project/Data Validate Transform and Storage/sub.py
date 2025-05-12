@@ -1,0 +1,273 @@
+# TriMet GPS Data Pipeline
+# Description: This script ingests GPS data from Google Pub/Sub, validates and transforms it,
+# and loads the clean data into a PostgreSQL database.
+
+import os
+import json
+import logging
+import time
+from datetime import datetime, timedelta
+from typing import List, Dict
+from google.cloud import pubsub_v1
+import psycopg2
+import pandas as pd
+from io import StringIO
+from threading import Lock
+
+# Logging setup for debugging and operational monitoring
+log_file = "batched_pipeline.log"
+logging.basicConfig(filename=log_file, level=logging.INFO,
+                    format="%(asctime)s - %(levelname)s - %(message)s")
+
+# GCP configuration for Pub/Sub subscription
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/home/kthaniko/pub_sub_key.json"
+project_id = "parabolic-grid-456118-u8"
+subscription_id = "my-sub"
+subscriber = pubsub_v1.SubscriberClient()
+subscription_path = subscriber.subscription_path(project_id, subscription_id)
+
+# PostgreSQL database connection parameters
+DB_CONFIG = {
+    "host": "localhost",
+    "port": 5432,
+    "database": "postgres",
+    "user": "postgres",
+    "password": "Lab"
+}
+
+# Global variables for batching and processing state
+first_operation_date = None
+buffer_lock = Lock()
+message_buffer = []
+BATCH_SIZE = 1000
+idle_timeout = 60  # in seconds
+start_time = time.time()
+total_received = 0
+total_loaded = 0
+last_message_time = datetime.now()
+
+# Class to validate and transform GPS records
+class TriMetRecordCleaner:
+    def __init__(self):
+        self.processed_combinations = set()
+
+    def process_and_validate(self, records: List[Dict]) -> pd.DataFrame:
+        cleaned_data = []
+        unique_entries = set()
+
+        for record in records:
+            record_key = (record.get("EVENT_NO_TRIP"), record.get("ACT_TIME"))
+            if record_key in unique_entries:
+                continue
+            unique_entries.add(record_key)
+
+            try:
+                if not self.is_valid_record(record):
+                    continue
+            except AssertionError as e:
+                logging.warning(f"Validation failed for record: {record.get('EVENT_NO_TRIP')}, Reason: {e}")
+                continue
+
+            # Construct timestamp
+            trip_id = record["EVENT_NO_TRIP"]
+            timestamp = datetime.strptime(record["OPD_DATE"].split(":")[0], "%d%b%Y") + timedelta(seconds=record["ACT_TIME"])
+
+            cleaned_data.append({
+                "timestamp": timestamp,
+                "latitude": record["GPS_LATITUDE"],
+                "longitude": record["GPS_LONGITUDE"],
+                "trip_id": trip_id,
+                "METERS": record["METERS"],
+            })
+
+        df = pd.DataFrame(cleaned_data)
+        if df.empty:
+            return df
+
+        # Calculate speed
+        df.sort_values(by=["trip_id", "timestamp"], inplace=True)
+        df['dMETERS'] = df.groupby('trip_id')['METERS'].diff()
+        df['dTIMESTAMP'] = df.groupby('trip_id')['timestamp'].diff()
+        df['SPEED'] = df.apply(
+            lambda r: r['dMETERS'] / r['dTIMESTAMP'].total_seconds()
+            if pd.notnull(r['dTIMESTAMP']) and r['dTIMESTAMP'].total_seconds() > 0 else None, axis=1)
+        df['SPEED'] = df['SPEED'].bfill()
+
+        return df[['timestamp', 'latitude', 'longitude', 'SPEED', 'trip_id']]
+
+    def is_valid_record(self, record: Dict) -> bool:
+        global first_operation_date
+        required_fields = ['EVENT_NO_TRIP', 'OPD_DATE', 'ACT_TIME', 'EVENT_NO_STOP', 'VEHICLE_ID',
+                           'GPS_LATITUDE', 'GPS_LONGITUDE', 'METERS']
+
+        for field in required_fields:
+            if field not in record:
+                raise AssertionError(f"Missing required field '{field}'")
+
+        if record.get('ACT_TIME') is None:
+            raise AssertionError("ACT_TIME is missing")
+
+        try:
+            datetime.strptime(record['OPD_DATE'].split(":")[0], "%d%b%Y")
+        except Exception:
+            raise AssertionError("Invalid OPD_DATE format")
+
+        lat = record.get('GPS_LATITUDE')
+        lon = record.get('GPS_LONGITUDE')
+        if lat is None or not isinstance(lat, float) or not (45.2 <= lat <= 45.7):
+            raise AssertionError("Latitude out of range")
+        if lon is None or not isinstance(lon, float) or not (-124.0 <= lon <= -122.0):
+            raise AssertionError("Longitude out of range")
+
+        if not isinstance(record['VEHICLE_ID'], int) or record['VEHICLE_ID'] <= 0:
+            raise AssertionError("Invalid VEHICLE_ID")
+        if record.get('METERS', 0) < 0:
+            raise AssertionError("Negative METERS value")
+
+        if 'GPS_SATELLITES' in record:
+            sats = record['GPS_SATELLITES']
+            if not isinstance(sats, (int, float)) or not (0 <= sats <= 12):
+                raise AssertionError("GPS_SATELLITES out of range")
+
+        unique_key = (record['VEHICLE_ID'], record['EVENT_NO_TRIP'], record['EVENT_NO_STOP'],
+                      record['ACT_TIME'], record['METERS'])
+        if unique_key in self.processed_combinations:
+            raise AssertionError("Duplicate record detected")
+        self.processed_combinations.add(unique_key)
+
+        if first_operation_date is None:
+            first_operation_date = record['OPD_DATE']
+        elif record['OPD_DATE'] != first_operation_date:
+            raise AssertionError("Mismatched OPD_DATE in batch")
+
+        return True
+
+# Class to extract and construct trip metadata
+class TripDetails:
+    def __init__(self):
+        self.trip_details = {}
+
+    def build_trip_details(self, records: List[Dict]) -> pd.DataFrame:
+        for record in records:
+            trip_id = record.get("EVENT_NO_TRIP")
+            vehicle_id = record.get("VEHICLE_ID")
+            route_id = record.get("ROUTE_ID", 0)
+
+            try:
+                day_of_week = datetime.strptime(record["OPD_DATE"].split(":")[0], "%d%b%Y").strftime("%A")
+                service_key = "Weekday" if day_of_week not in ["Saturday", "Sunday"] else day_of_week
+            except Exception:
+                service_key = "Weekday"
+
+            if trip_id not in self.trip_details:
+                self.trip_details[trip_id] = {
+                    "trip_id": trip_id,
+                    "route_id": route_id,
+                    "vehicle_id": vehicle_id,
+                    "service_key": service_key,
+                    "direction": "Out"
+                }
+
+        return pd.DataFrame(self.trip_details.values())
+
+# Main pipeline handler to validate, transform, and save
+class TriMetPipelineHandler:
+    def __init__(self):
+        self.cleaner = TriMetRecordCleaner()
+        self.metadata_extractor = TripDetails()
+
+    def process_data(self, records: List[Dict]) -> pd.DataFrame:
+        validated_data = self.cleaner.process_and_validate(records)
+        trip_metadata = self.metadata_extractor.build_trip_details(records)
+        return validated_data, trip_metadata
+
+    def save_to_postgres(self, validated_df: pd.DataFrame, trip_metadata_df: pd.DataFrame, db_config: Dict):
+        global total_loaded
+        try:
+            connection = psycopg2.connect(**db_config)
+            cursor = connection.cursor()
+
+            validated_df["tstamp"] = validated_df["timestamp"].apply(lambda ts: ts.strftime('%Y-%m-%d %H:%M:%S'))
+            validated_df.drop(columns=["timestamp"], inplace=True)
+            validated_df = validated_df[["tstamp", "latitude", "longitude", "SPEED", "trip_id"]]
+
+            for _, row in trip_metadata_df.iterrows():
+                cursor.execute(
+                    "INSERT INTO trip (trip_id, route_id, vehicle_id, service_key, direction) "
+                    "VALUES (%s, %s, %s, %s, %s) ON CONFLICT (trip_id) DO NOTHING",
+                    (row['trip_id'], row['route_id'], row['vehicle_id'], row['service_key'], row['direction'])
+                )
+
+            if not validated_df.empty:
+                for i in range(0, len(validated_df), 10000):
+                    batch = validated_df.iloc[i:i + 10000]
+                    buffer = StringIO()
+                    batch.to_csv(buffer, index=False, header=False, sep='\t')
+                    buffer.seek(0)
+                    cursor.copy_from(buffer, 'breadcrumb', null="", columns=(
+                        'tstamp', 'latitude', 'longitude', 'speed', 'trip_id'))
+
+            connection.commit()
+            total_loaded += len(validated_df)
+            logging.info("Data successfully saved to PostgreSQL.")
+        except Exception as e:
+            logging.error(f"Error saving data to PostgreSQL: {e}")
+        finally:
+            if connection:
+                cursor.close()
+                connection.close()
+
+# Callback to handle each message from Pub/Sub
+def callback(message: pubsub_v1.subscriber.message.Message):
+    global message_buffer, total_received, last_message_time
+    try:
+        data = json.loads(message.data.decode("utf-8"))
+        total_received += 1
+        last_message_time = datetime.now()
+
+        batch = None
+        with buffer_lock:
+            message_buffer.append(data)
+            if len(message_buffer) >= BATCH_SIZE:
+                batch = message_buffer[:]
+                message_buffer.clear()
+
+        if batch:
+            validated_df, trip_metadata_df = handler.process_data(batch)
+            handler.save_to_postgres(validated_df, trip_metadata_df, DB_CONFIG)
+
+        message.ack()
+    except Exception as e:
+        logging.error(f"Callback error: {e}")
+
+# Instantiate handler
+handler = TriMetPipelineHandler()
+
+# Main loop to maintain subscription until idle
+if __name__ == "__main__":
+    try:
+        while True:
+            streaming_pull_future = subscriber.subscribe(subscription_path, callback=callback)
+            with subscriber:
+                try:
+                    while True:
+                        if (datetime.now() - last_message_time).total_seconds() > idle_timeout:
+                            streaming_pull_future.cancel()
+                            break
+                        time.sleep(5)
+                    break
+                except Exception as e:
+                    logging.error(f"Subscriber crashed: {e}. Restarting...")
+                    streaming_pull_future.cancel()
+                    continue
+                except KeyboardInterrupt:
+                    streaming_pull_future.cancel()
+                    break
+    finally:
+        elapsed = time.time() - start_time
+        print(f"Total messages received: {total_received}")
+        print(f"Total records loaded into DB: {total_loaded}")
+        print(f"Elapsed time: {elapsed:.2f} seconds")
+        if os.path.exists(log_file):
+            size_kb = os.path.getsize(log_file) / 1024
+            print(f"Log file size: {size_kb:.2f} KB")
