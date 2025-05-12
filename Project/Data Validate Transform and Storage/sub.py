@@ -18,7 +18,7 @@ logging.basicConfig(filename=log_file, level=logging.INFO,
 # Set up GCP credentials and define the Pub/Sub subscription path
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/home/kthaniko/pub_sub_key.json"
 project_id = "parabolic-grid-456118-u8"
-subscription_id = "my-sub"
+subscription_id = "datatransporttopic-sub"
 subscriber = pubsub_v1.SubscriberClient()
 subscription_path = subscriber.subscription_path(project_id, subscription_id)
 
@@ -28,7 +28,7 @@ DB_CONFIG = {
     "port": 5432,
     "database": "postgres",
     "user": "postgres",
-    "password": "Lab"
+    "password": "DataEngineering"
 }
 
 # Global variables to help with batching, timing, and tracking stats
@@ -247,6 +247,7 @@ handler = TriMetPipelineHandler()
 if __name__ == "__main__":
     try:
         while True:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Subscribing to {subscription_path}...")
             streaming_pull_future = subscriber.subscribe(subscription_path, callback=callback)
             with subscriber:
                 try:
