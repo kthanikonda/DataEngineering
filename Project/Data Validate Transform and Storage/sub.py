@@ -93,6 +93,8 @@ class TriMetRecordCleaner:
 
     def is_valid_record(self, record: Dict) -> bool:
         global first_operation_date
+
+        # assertion-1: Ensure all required fields are present in the input record
         required_fields = ['EVENT_NO_TRIP', 'OPD_DATE', 'ACT_TIME', 'EVENT_NO_STOP', 'VEHICLE_ID',
                            'GPS_LATITUDE', 'GPS_LONGITUDE', 'METERS']
 
@@ -100,41 +102,52 @@ class TriMetRecordCleaner:
             if field not in record:
                 raise AssertionError(f"Missing required field '{field}'")
 
+        # assertion-2: Check if ACT_TIME is available or not
         if record.get('ACT_TIME') is None:
-            raise AssertionError("ACT_TIME is missing")
+            raise AssertionError(f"ACT_TIME is missing for record: {record.get('EVENT_NO_TRIP')}")
 
+        # assertion-3: Validate OPD_DATE is in correct format 
         try:
             datetime.strptime(record['OPD_DATE'].split(":")[0], "%d%b%Y")
         except Exception:
-            raise AssertionError("Invalid OPD_DATE format")
+            raise AssertionError(f"Invalid OPD_DATE format: {record.get('OPD_DATE')}")
 
+        # assertion-4: Check latitude is a float and is within expected Portland GPS boundary
         lat = record.get('GPS_LATITUDE')
-        lon = record.get('GPS_LONGITUDE')
         if lat is None or not isinstance(lat, float) or not (45.2 <= lat <= 45.7):
-            raise AssertionError("Latitude out of range")
+            raise AssertionError(f"Latitude {lat} is missing or out of range")
+
+        # assertion-5: Check longitude is a float and is within Portland region
+        lon = record.get('GPS_LONGITUDE')
         if lon is None or not isinstance(lon, float) or not (-124.0 <= lon <= -122.0):
-            raise AssertionError("Longitude out of range")
+            raise AssertionError(f"Longitude {lon} is missing or out of range")
 
+        # assertion-6: Vehicle ID must be a valid positive integer
         if not isinstance(record['VEHICLE_ID'], int) or record['VEHICLE_ID'] <= 0:
-            raise AssertionError("Invalid VEHICLE_ID")
-        if record.get('METERS', 0) < 0:
-            raise AssertionError("Negative METERS value")
+            raise AssertionError(f"Invalid VEHICLE_ID: {record['VEHICLE_ID']}")
 
+        # assertion-7: METERS value should not be negative
+        if record.get('METERS', 0) < 0:
+            raise AssertionError(f"Negative METERS value: {record['METERS']}")
+
+        # assertion-8: If GPS_SATELLITES exists it must be a number between 0 and 12
         if 'GPS_SATELLITES' in record:
             sats = record['GPS_SATELLITES']
             if not isinstance(sats, (int, float)) or not (0 <= sats <= 12):
-                raise AssertionError("GPS_SATELLITES out of range")
+                raise AssertionError(f"GPS_SATELLITES {sats} out of range (0–12)")
 
+        # assertion-9: Prevent duplicate records by checking unique key combination
         unique_key = (record['VEHICLE_ID'], record['EVENT_NO_TRIP'], record['EVENT_NO_STOP'],
                       record['ACT_TIME'], record['METERS'])
         if unique_key in self.processed_combinations:
-            raise AssertionError("Duplicate record detected")
+            raise AssertionError(f"Duplicate record detected with key: {unique_key}")
         self.processed_combinations.add(unique_key)
 
+        # assertion-10: All records processed in one batch should have same OPD_DATE
         if first_operation_date is None:
             first_operation_date = record['OPD_DATE']
         elif record['OPD_DATE'] != first_operation_date:
-            raise AssertionError("Mismatched OPD_DATE in batch")
+            raise AssertionError(f"Inconsistent OPD_DATE: {record['OPD_DATE']} (expected {first_operation_date})")
 
         return True
 
