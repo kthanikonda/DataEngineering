@@ -243,11 +243,16 @@ def callback(message: pubsub_v1.subscriber.message.Message):
 # Create the main pipeline handler
 handler = TriMetPipelineHandler()
 
+# Helper: Log and print together
+def log_and_print(message: str):
+    print(message)
+    logging.info(message)
+
 # Keep receiving messages until idle timeout is reached
 if __name__ == "__main__":
     try:
         while True:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Subscribing to {subscription_path}...")
+            log_and_print(f"[{datetime.now().strftime('%H:%M:%S')}] Subscribing to {subscription_path}...")
             streaming_pull_future = subscriber.subscribe(subscription_path, callback=callback)
             with subscriber:
                 try:
@@ -266,9 +271,10 @@ if __name__ == "__main__":
                     break
     finally:
         elapsed = time.time() - start_time
-        print(f"Total messages received: {total_received}")
-        print(f"Total records loaded into DB: {total_loaded}")
-        print(f"Elapsed time: {elapsed:.2f} seconds")
+        log_and_print(f"Total messages received: {total_received}")
+        log_and_print(f"Total records loaded into DB: {total_loaded}")
+        log_and_print(f"Elapsed time: {elapsed:.2f} seconds")
         if os.path.exists(log_file):
             size_kb = os.path.getsize(log_file) / 1024
-            print(f"Log file size: {size_kb:.2f} KB")
+            log_and_print(f"Log file size: {size_kb:.2f} KB")
+
