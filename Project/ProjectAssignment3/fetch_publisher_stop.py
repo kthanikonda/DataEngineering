@@ -99,7 +99,7 @@ for vid in vehicle_ids:
 wait(futures)
 end_time = time.time()
 
-with open("count.txt", 'w') as f:
+with open("count.txt", 'a') as f:
     f.write(f"Total Success Files: {success_count}\n")
     f.write(f"Stop events published: {msg_count}\n")
     f.write(f"Data saved under folder: {parent_dir}\n")
