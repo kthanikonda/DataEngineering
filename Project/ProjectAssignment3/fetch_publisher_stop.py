@@ -10,7 +10,7 @@ from concurrent.futures import wait
 
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/home/kthaniko/pub_sub_key.json"
 project_id = "parabolic-grid-456118-u8"
-topic_id = "datatransporttopic"
+topic_id = "my-topic"
 publisher = pubsub_v1.PublisherClient()
 topic_path = publisher.topic_path(project_id, topic_id)
 
@@ -99,7 +99,7 @@ for vid in vehicle_ids:
 wait(futures)
 end_time = time.time()
 
-with open("count.txt", 'a') as f:
+with open("count.txt", 'w') as f:
     f.write(f"Total Success Files: {success_count}\n")
     f.write(f"Stop events published: {msg_count}\n")
     f.write(f"Data saved under folder: {parent_dir}\n")
