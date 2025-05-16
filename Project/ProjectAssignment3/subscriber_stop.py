@@ -16,7 +16,7 @@ logging.basicConfig(filename=log_file, level=logging.INFO,
 # Set up GCP credentials and define the Pub/Sub subscription path
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/home/kthaniko/pub_sub_key.json"
 project_id = "parabolic-grid-456118-u8"
-subscription_id = "my-sub"
+subscription_id = "datatransporttopic-sub"
 subscriber = pubsub_v1.SubscriberClient()
 subscription_path = subscriber.subscription_path(project_id, subscription_id)
 
