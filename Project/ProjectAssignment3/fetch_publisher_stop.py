@@ -10,7 +10,7 @@ from concurrent.futures import wait
 
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/home/kthaniko/pub_sub_key.json"
 project_id = "parabolic-grid-456118-u8"
-topic_id = "my-topic"
+topic_id = "datatransporttopic"
 publisher = pubsub_v1.PublisherClient()
 topic_path = publisher.topic_path(project_id, topic_id)
 
