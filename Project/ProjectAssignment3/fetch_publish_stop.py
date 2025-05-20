@@ -103,7 +103,7 @@ class StopEventPublisher:
 def main():
     base_url = "https://busdata.cs.pdx.edu/api/getStopEvents?vehicle_num="
     project_id = "parabolic-grid-456118-u8"
-    topic_id = "my-topic"
+    topic_id = "datatransporttopic"
     today = datetime.now().strftime("%Y-%m-%d")
     output_folder = f"stop_event_data_{today}"
 
