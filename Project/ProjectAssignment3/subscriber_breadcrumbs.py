@@ -91,7 +91,7 @@ class TriMetRecordCleaner:
 
         return df[['timestamp', 'latitude', 'longitude', 'SPEED', 'trip_id']]
 
-    def run_all_validations(self, record):
+def run_all_validations(self, record):
         self.validate_required_fields(record)
         self.validate_act_time(record)
         self.validate_opd_date(record)
@@ -104,55 +104,106 @@ class TriMetRecordCleaner:
         self.validate_opd_consistency(record)
 
     def validate_required_fields(self, record):
-        required = ['EVENT_NO_TRIP', 'OPD_DATE', 'ACT_TIME', 'EVENT_NO_STOP', 'VEHICLE_ID',
-                    'GPS_LATITUDE', 'GPS_LONGITUDE', 'METERS']
-        for field in required:
-            assert field in record, f"Missing field: {field}"
 
+         # assertion-1: Ensure all required fields are present in the input record
+        try:
+            required = ['EVENT_NO_TRIP', 'OPD_DATE', 'ACT_TIME', 'EVENT_NO_STOP', 'VEHICLE_ID',
+                        'GPS_LATITUDE', 'GPS_LONGITUDE', 'METERS']
+            for field in required:
+                assert field in record, f"Missing field: {field}"
+        except AssertionError as e:
+            logging.warning(f"validate_required_fields failed: {e} | Record: {record}")
+            raise
+
+    # assertion-2: Check if ACT_TIME is available or not
     def validate_act_time(self, record):
-        assert record.get('ACT_TIME') is not None, "ACT_TIME is missing"
-
+        try:
+            assert record.get('ACT_TIME') is not None, "ACT_TIME is missing"
+        except AssertionError as e:
+            logging.warning(f"validate_act_time failed: {e} | Record: {record}")
+            raise
+          
+    # assertion-3: Validate OPD_DATE is in correct format 
     def validate_opd_date(self, record):
-        datetime.strptime(record['OPD_DATE'].split(":")[0], "%d%b%Y")
-
+        try:
+            datetime.strptime(record['OPD_DATE'].split(":")[0], "%d%b%Y")
+        except Exception as e:
+            logging.warning(f"validate_opd_date failed: {e} | Record: {record}")
+            raise AssertionError("Invalid OPD_DATE format")
+          
+    # assertion-4: Check latitude is a float and is within expected Portland GPS boundary
     def validate_latitude(self, record):
-        lat = record.get('GPS_LATITUDE')
-        assert lat is not None, "Latitude is None"
-        lat = float(lat)
-        assert 45.2 <= lat <= 45.7, f"Invalid latitude: {lat}"
-
+        try:
+            lat = record.get('GPS_LATITUDE')
+            assert lat is not None, "Latitude is None"
+            lat = float(lat)
+            assert 45.2 <= lat <= 45.7, f"Invalid latitude: {lat}"
+        except AssertionError as e:
+            logging.warning(f"validate_latitude failed: {e} | Record: {record}")
+            raise
+          
+    # assertion-5: Check longitude is a float and is within Portland region
     def validate_longitude(self, record):
-        lon = record.get('GPS_LONGITUDE')
-        assert lon is not None, "Longitude is None"
-        lon = float(lon)
-        assert -124.0 <= lon <= -122.0, f"Invalid longitude: {lon}"
-
+        try:
+            lon = record.get('GPS_LONGITUDE')
+            assert lon is not None, "Longitude is None"
+            lon = float(lon)
+            assert -124.0 <= lon <= -122.0, f"Invalid longitude: {lon}"
+        except AssertionError as e:
+            logging.warning(f"validate_longitude failed: {e} | Record: {record}")
+            raise
+          
+    # assertion-6: Vehicle ID must be a valid positive integer
     def validate_vehicle_id(self, record):
-        vid = record.get('VEHICLE_ID')
-        assert isinstance(vid, int) and vid > 0, f"Invalid VEHICLE_ID: {vid}"
-
+        try:
+            vid = record.get('VEHICLE_ID')
+            assert isinstance(vid, int) and vid > 0, f"Invalid VEHICLE_ID: {vid}"
+        except AssertionError as e:
+            logging.warning(f"validate_vehicle_id failed: {e} | Record: {record}")
+            raise
+          
+    # assertion-7: METERS value should not be negative
     def validate_meters(self, record):
-        meters = record.get('METERS', 0)
-        assert isinstance(meters, (int, float)), "METERS not numeric"
-        assert meters >= 0, f"Negative METERS: {meters}"
-
+        try:
+            meters = record.get('METERS', 0)
+            assert isinstance(meters, (int, float)), "METERS not numeric"
+            assert meters >= 0, f"Negative METERS: {meters}"
+        except AssertionError as e:
+            logging.warning(f"validate_meters failed: {e} | Record: {record}")
+            raise
+          
+    # assertion-8: If GPS_SATELLITES exists it must be a number between 0 and 12
     def validate_gps_satellites(self, record):
-        sats = record.get('GPS_SATELLITES')
-        if sats is not None:
-            assert isinstance(sats, (int, float)) and 0 <= sats <= 12, f"Invalid GPS_SATELLITES: {sats}"
-
+        try:
+            sats = record.get('GPS_SATELLITES')
+            if sats is not None:
+                assert isinstance(sats, (int, float)) and 0 <= sats <= 12, f"Invalid GPS_SATELLITES: {sats}"
+        except AssertionError as e:
+            logging.warning(f"validate_gps_satellites failed: {e} | Record: {record}")
+            raise
+          
+    # assertion-9: Prevent duplicate records by checking unique key combination
     def validate_uniqueness(self, record):
-        key = (record['VEHICLE_ID'], record['EVENT_NO_TRIP'], record['EVENT_NO_STOP'],
-               record['ACT_TIME'], record['METERS'])
-        assert key not in self.processed_combinations, f"Duplicate record: {key}"
-        self.processed_combinations.add(key)
-
+        try:
+            key = (record['VEHICLE_ID'], record['EVENT_NO_TRIP'], record['EVENT_NO_STOP'],
+                   record['ACT_TIME'], record['METERS'])
+            assert key not in self.processed_combinations, f"Duplicate record: {key}"
+            self.processed_combinations.add(key)
+        except AssertionError as e:
+            logging.warning(f"validate_uniqueness failed: {e} | Record: {record}")
+            raise
+          
+    # assertion-10: All records processed in one batch should have same OPD_DATE
     def validate_opd_consistency(self, record):
-        global first_operation_date
-        if first_operation_date is None:
-            first_operation_date = record['OPD_DATE']
-        else:
-            assert record['OPD_DATE'] == first_operation_date, f"Mismatched OPD_DATE: {record['OPD_DATE']}"
+        try:
+            global first_operation_date
+            if first_operation_date is None:
+                first_operation_date = record['OPD_DATE']
+            else:
+                assert record['OPD_DATE'] == first_operation_date, f"Mismatched OPD_DATE: {record['OPD_DATE']}"
+        except AssertionError as e:
+            logging.warning(f"validate_opd_consistency failed: {e} | Record: {record}")
+            raise
 
 
 class TriMetPipelineHandler:
