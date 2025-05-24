@@ -14,9 +14,6 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# loaded trip_ids to avoid duplicates
-loaded_trip_ids = set()
-
 # Set up a log file to record events and errors during pipeline execution
 log_file = "batched_pipeline.log"
 logging.basicConfig(filename=log_file, level=logging.INFO,
@@ -38,7 +35,7 @@ DB_CONFIG = {
     "password": os.getenv("DB_PASSWORD")
 }
 
-# Global variables to help with batching, timing, and tracking stats
+# Global variables
 first_operation_date = None
 buffer_lock = Lock()
 message_buffer = []
@@ -49,9 +46,9 @@ total_received = 0
 total_loaded = 0
 last_message_time = datetime.now()
 
-# Class to validate each incoming GPS record and compute speed
+# Validator and cleaner class
 class TriMetRecordCleaner:
-    def _init_(self):
+    def __init__(self):
         self.processed_combinations = set()
 
     def process_and_validate(self, records: List[Dict]) -> pd.DataFrame:
@@ -82,8 +79,7 @@ class TriMetRecordCleaner:
         df = pd.DataFrame(cleaned_data)
         if df.empty:
             return df
-          
-        # Sort and compute speed using METERS and time difference
+
         df.sort_values(by=["trip_id", "timestamp"], inplace=True)
         df['dMETERS'] = df.groupby('trip_id')['METERS'].diff()
         df['dTIMESTAMP'] = df.groupby('trip_id')['timestamp'].diff()
@@ -91,7 +87,6 @@ class TriMetRecordCleaner:
             lambda r: r['dMETERS'] / r['dTIMESTAMP'].total_seconds()
             if pd.notnull(r['dTIMESTAMP']) and r['dTIMESTAMP'].total_seconds() > 0 else None, axis=1)
 
-         # Fill missing speed values
         df['SPEED'] = df['SPEED'].bfill()
 
         return df[['timestamp', 'latitude', 'longitude', 'SPEED', 'trip_id']]
@@ -109,146 +104,66 @@ class TriMetRecordCleaner:
         self.validate_opd_consistency(record)
 
     def validate_required_fields(self, record):
+        required = ['EVENT_NO_TRIP', 'OPD_DATE', 'ACT_TIME', 'EVENT_NO_STOP', 'VEHICLE_ID',
+                    'GPS_LATITUDE', 'GPS_LONGITUDE', 'METERS']
+        for field in required:
+            assert field in record, f"Missing field: {field}"
 
-         # assertion-1: Ensure all required fields are present in the input record
-        try:
-            required = ['EVENT_NO_TRIP', 'OPD_DATE', 'ACT_TIME', 'EVENT_NO_STOP', 'VEHICLE_ID',
-                        'GPS_LATITUDE', 'GPS_LONGITUDE', 'METERS']
-            for field in required:
-                assert field in record, f"Missing field: {field}"
-        except AssertionError as e:
-            logging.warning(f"validate_required_fields failed: {e} | Record: {record}")
-            raise
-
-    # assertion-2: Check if ACT_TIME is available or not
     def validate_act_time(self, record):
-        try:
-            assert record.get('ACT_TIME') is not None, "ACT_TIME is missing"
-        except AssertionError as e:
-            logging.warning(f"validate_act_time failed: {e} | Record: {record}")
-            raise
-          
-    # assertion-3: Validate OPD_DATE is in correct format 
+        assert record.get('ACT_TIME') is not None, "ACT_TIME is missing"
+
     def validate_opd_date(self, record):
-        try:
-            datetime.strptime(record['OPD_DATE'].split(":")[0], "%d%b%Y")
-        except Exception as e:
-            logging.warning(f"validate_opd_date failed: {e} | Record: {record}")
-            raise AssertionError("Invalid OPD_DATE format")
-          
-    # assertion-4: Check latitude is a float and is within expected Portland GPS boundary
+        datetime.strptime(record['OPD_DATE'].split(":")[0], "%d%b%Y")
+
     def validate_latitude(self, record):
-        try:
-            lat = record.get('GPS_LATITUDE')
-            assert lat is not None, "Latitude is None"
-            lat = float(lat)
-            assert 45.2 <= lat <= 45.7, f"Invalid latitude: {lat}"
-        except AssertionError as e:
-            logging.warning(f"validate_latitude failed: {e} | Record: {record}")
-            raise
-          
-    # assertion-5: Check longitude is a float and is within Portland region
+        lat = record.get('GPS_LATITUDE')
+        assert lat is not None, "Latitude is None"
+        lat = float(lat)
+        assert 45.2 <= lat <= 45.7, f"Invalid latitude: {lat}"
+
     def validate_longitude(self, record):
-        try:
-            lon = record.get('GPS_LONGITUDE')
-            assert lon is not None, "Longitude is None"
-            lon = float(lon)
-            assert -124.0 <= lon <= -122.0, f"Invalid longitude: {lon}"
-        except AssertionError as e:
-            logging.warning(f"validate_longitude failed: {e} | Record: {record}")
-            raise
-          
-    # assertion-6: Vehicle ID must be a valid positive integer
+        lon = record.get('GPS_LONGITUDE')
+        assert lon is not None, "Longitude is None"
+        lon = float(lon)
+        assert -124.0 <= lon <= -122.0, f"Invalid longitude: {lon}"
+
     def validate_vehicle_id(self, record):
-        try:
-            vid = record.get('VEHICLE_ID')
-            assert isinstance(vid, int) and vid > 0, f"Invalid VEHICLE_ID: {vid}"
-        except AssertionError as e:
-            logging.warning(f"validate_vehicle_id failed: {e} | Record: {record}")
-            raise
-          
-    # assertion-7: METERS value should not be negative
+        vid = record.get('VEHICLE_ID')
+        assert isinstance(vid, int) and vid > 0, f"Invalid VEHICLE_ID: {vid}"
+
     def validate_meters(self, record):
-        try:
-            meters = record.get('METERS', 0)
-            assert isinstance(meters, (int, float)), "METERS not numeric"
-            assert meters >= 0, f"Negative METERS: {meters}"
-        except AssertionError as e:
-            logging.warning(f"validate_meters failed: {e} | Record: {record}")
-            raise
-          
-    # assertion-8: If GPS_SATELLITES exists it must be a number between 0 and 12
+        meters = record.get('METERS', 0)
+        assert isinstance(meters, (int, float)), "METERS not numeric"
+        assert meters >= 0, f"Negative METERS: {meters}"
+
     def validate_gps_satellites(self, record):
-        try:
-            sats = record.get('GPS_SATELLITES')
-            if sats is not None:
-                assert isinstance(sats, (int, float)) and 0 <= sats <= 12, f"Invalid GPS_SATELLITES: {sats}"
-        except AssertionError as e:
-            logging.warning(f"validate_gps_satellites failed: {e} | Record: {record}")
-            raise
-          
-    # assertion-9: Prevent duplicate records by checking unique key combination
+        sats = record.get('GPS_SATELLITES')
+        if sats is not None:
+            assert isinstance(sats, (int, float)) and 0 <= sats <= 12, f"Invalid GPS_SATELLITES: {sats}"
+
     def validate_uniqueness(self, record):
-        try:
-            key = (record['VEHICLE_ID'], record['EVENT_NO_TRIP'], record['EVENT_NO_STOP'],
-                   record['ACT_TIME'], record['METERS'])
-            assert key not in self.processed_combinations, f"Duplicate record: {key}"
-            self.processed_combinations.add(key)
-        except AssertionError as e:
-            logging.warning(f"validate_uniqueness failed: {e} | Record: {record}")
-            raise
-          
-    # assertion-10: All records processed in one batch should have same OPD_DATE
+        key = (record['VEHICLE_ID'], record['EVENT_NO_TRIP'], record['EVENT_NO_STOP'],
+               record['ACT_TIME'], record['METERS'])
+        assert key not in self.processed_combinations, f"Duplicate record: {key}"
+        self.processed_combinations.add(key)
+
     def validate_opd_consistency(self, record):
-        try:
-            global first_operation_date
-            if first_operation_date is None:
-                first_operation_date = record['OPD_DATE']
-            else:
-                assert record['OPD_DATE'] == first_operation_date, f"Mismatched OPD_DATE: {record['OPD_DATE']}"
-        except AssertionError as e:
-            logging.warning(f"validate_opd_consistency failed: {e} | Record: {record}")
-            raise
+        global first_operation_date
+        if first_operation_date is None:
+            first_operation_date = record['OPD_DATE']
+        else:
+            assert record['OPD_DATE'] == first_operation_date, f"Mismatched OPD_DATE: {record['OPD_DATE']}"
 
-# Class to extract trip-level metadata like service type, route and direction
-class TripDetails:
-    def _init_(self):
-        self.trip_details = {}
 
-    def build_trip_details(self, records: List[Dict]) -> pd.DataFrame:
-        for record in records:
-            trip_id = record.get("EVENT_NO_TRIP")
-            vehicle_id = record.get("VEHICLE_ID")
-            route_id = record.get("ROUTE_ID", 0)
-            try:
-                day_of_week = datetime.strptime(record["OPD_DATE"].split(":")[0], "%d%b%Y").strftime("%A")
-                service_key = "Weekday" if day_of_week not in ["Saturday", "Sunday"] else day_of_week
-            except Exception:
-                service_key = "Weekday"
-
-            if trip_id not in self.trip_details:
-                self.trip_details[trip_id] = {
-                    "trip_id": trip_id,
-                    "route_id": route_id,
-                    "vehicle_id": vehicle_id,
-                    "service_key": service_key,
-                    "direction": "Out"
-                }
-        return pd.DataFrame(self.trip_details.values())
-
-# Class that coordinates data processing and loading to DB
 class TriMetPipelineHandler:
-    def _init_(self):
+    def __init__(self):
         self.cleaner = TriMetRecordCleaner()
-        self.metadata_extractor = TripDetails()
 
     def process_data(self, records: List[Dict]) -> pd.DataFrame:
-        validated_data = self.cleaner.process_and_validate(records)
-        trip_metadata = self.metadata_extractor.build_trip_details(records)
-        return validated_data, trip_metadata
+        return self.cleaner.process_and_validate(records)
 
-    def save_to_postgres(self, validated_df: pd.DataFrame, trip_metadata_df: pd.DataFrame, db_config: Dict):
-        global total_loaded, loaded_trip_ids
+    def save_to_postgres(self, validated_df: pd.DataFrame, db_config: Dict):
+        global total_loaded
         try:
             conn = psycopg2.connect(**db_config)
             cur = conn.cursor()
@@ -257,17 +172,6 @@ class TriMetPipelineHandler:
             validated_df.drop(columns=["timestamp"], inplace=True)
             validated_df.rename(columns={"SPEED": "speed"}, inplace=True)
             validated_df = validated_df[["tstamp", "latitude", "longitude", "speed", "trip_id"]]
-
-            if not trip_metadata_df.empty:
-                trip_metadata_df = trip_metadata_df[~trip_metadata_df["trip_id"].isin(loaded_trip_ids)]
-
-                if not trip_metadata_df.empty:
-                    buffer = StringIO()
-                    trip_metadata_df = trip_metadata_df[["trip_id", "route_id", "vehicle_id", "service_key", "direction"]]
-                    trip_metadata_df.to_csv(buffer, index=False, header=False, sep='\t')
-                    buffer.seek(0)
-                    cur.copy_from(buffer, 'trip', null="", columns=("trip_id", "route_id", "vehicle_id", "service_key", "direction"))
-                    loaded_trip_ids.update(trip_metadata_df["trip_id"].tolist())
 
             if not validated_df.empty:
                 for i in range(0, len(validated_df), 10000):
@@ -279,13 +183,14 @@ class TriMetPipelineHandler:
 
             conn.commit()
             total_loaded += len(validated_df)
-            logging.info("Data successfully saved to PostgreSQL.")
+            logging.info("Breadcrumb data successfully saved to PostgreSQL.")
         except Exception as e:
             logging.error(f"PostgreSQL save error: {e}")
         finally:
             if conn:
                 cur.close()
                 conn.close()
+
 
 def callback(message: pubsub_v1.subscriber.message.Message):
     global message_buffer, total_received, last_message_time
@@ -302,20 +207,22 @@ def callback(message: pubsub_v1.subscriber.message.Message):
                 message_buffer.clear()
 
         if batch:
-            validated_df, trip_metadata_df = handler.process_data(batch)
-            handler.save_to_postgres(validated_df, trip_metadata_df, DB_CONFIG)
+            validated_df = handler.process_data(batch)
+            handler.save_to_postgres(validated_df, DB_CONFIG)
 
         message.ack()
     except Exception as e:
         logging.error(f"Callback error: {e}")
 
+
 handler = TriMetPipelineHandler()
+
 
 def log_and_print(msg: str):
     print(msg)
     logging.info(msg)
 
-if _name_ == "_main_":
+if __name__ == "__main__":
     try:
         log_and_print(f"[{datetime.now().strftime('%H:%M:%S')}] Subscribing to {subscription_path}...")
         future = subscriber.subscribe(subscription_path, callback=callback)
